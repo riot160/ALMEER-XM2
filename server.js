@@ -1,178 +1,95 @@
-// ═══════════════════════════════════════════════════
-//  ALMEER MD - WEB SERVER (Express + Native Pairing)
-// ═══════════════════════════════════════════════════
-
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { config } from './config.js';
 import { log } from './lib/logger.js';
-import { getSock } from './index.js'; // Import live socket
+import { getSock } from './index.js';
 
-export const app = express();
+const app = express();
 
-// ── Middleware ──
+// FIXED: Railway proxy + rate limit
+app.set('trust proxy', 1);
+app.enable('trust proxy');
+
 app.use(cors());
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
 
-// ── Rate limiter ──
-app.use('/api/', rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  message: { error: 'Too many requests' }
-}));
+// FIXED Rate limit
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  message: 'Too many requests',
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use('/api/', limiter);
 
-// ──────────────────────────────────────────────────
-//  Native Pairing API (No auth - public)
-// ──────────────────────────────────────────────────
-
-// POST /api/pair → Generate pairing code instantly
+// Pairing API
 app.post('/api/pair', async (req, res) => {
   try {
-    const { phoneNumber } = req.body;
-    if (!phoneNumber || phoneNumber.length < 10) {
-      return res.status(400).json({ 
-        error: 'Phone number required (with country code)',
-        example: '254712345678'
-      });
+    const phone = req.body.phoneNumber?.replace(/[^0-9]/g, '');
+    if (!phone || phone.length < 10) {
+      return res.status(400).json({ error: 'Valid number required' });
     }
 
-    const sock = getSock();
-    if (!sock) {
-      return res.status(503).json({ 
-        error: 'Bot starting... wait 10 seconds' 
-      });
-    }
+    const s = getSock();
+    if (!s) return res.status(503).json({ error: 'Bot not ready' });
 
-    const code = await sock.requestPairingCode(phoneNumber.replace(/[^0-9]/g, ''));
+    const code = await s.requestPairingCode(phone);
+    log.ok(`PAIR ${phone}: ${code}`);
     
-    log.ok(`[PAIR] ${phoneNumber} → ${code}`);
-    
-    res.json({
-      success: true,
-      code,
-      phoneNumber,
-      message: '✅ Check WhatsApp notification → Link with phone number → Enter code',
-      expiresIn: '5 minutes'
-    });
+    res.json({ success: true, code, message: 'Check WhatsApp now!' });
   } catch (e) {
-    log.error(`[PAIR ERROR] ${e.message}`);
-    res.status(500).json({ 
-      error: e.message.includes('already') ? 'Already paired' : 'Try again',
-      retry: true 
-    });
+    res.status(500).json({ error: e.message });
   }
 });
 
-// GET / → Cyberpunk pairing UI
+// UI
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
-<html>
-<head>
+<html><head>
+<title>${config.botName}</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width">
-<title>${config.botName}</title>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'Orbitron',monospace;background:#000;color:#0ff;min-height:100vh;display:grid;place-items:center;padding:20px;overflow:hidden;}
-canvas{position:fixed;top:0;left:0;z-index:1;width:100%;height:100%;}
-.card{background:rgba(10,10,20,.95);border:2px solid #0ff5;border-radius:24px;padding:40px;max-width:500px;width:100%;box-shadow:0 0 40px #0ff3;text-align:center;position:relative;z-index:2;}
-h1{font-size:clamp(1.8rem,6vw,3rem);background:linear-gradient(45deg,#0ff,#f0f);-webkit-background-clip:text;background-clip:text;margin-bottom:15px;}
-input{width:100%;padding:20px;font-size:18px;background:rgba(0,0,0,.8);border:2px solid #0ff4;border-radius:16px;color:#fff;margin:25px 0;font-family:inherit;}
-button{width:100%;padding:20px;font-size:18px;font-weight:900;background:linear-gradient(45deg,#0ff,#f0f);color:#000;border:none;border-radius:16px;cursor:pointer;box-shadow:0 10px 25px rgba(0,255,255,.4);}
-#result{display:none;margin-top:30px;padding:30px;border:2px solid #0ff;background:rgba(0,255,255,.1);border-radius:20px;}
-#code{font-size:3rem;font-weight:900;background:linear-gradient(45deg,#0ff,#f0f);-webkit-background-clip:text;background-clip:text;margin:15px 0;letter-spacing:10px;text-shadow:0 0 30px #0ff;}
-.instr{margin-top:20px;padding:20px;background:rgba(255,0,255,.15);border-radius:15px;border-left:5px solid #f0f;font-size:14px;line-height:1.5;}
-.status{margin-top:20px;padding:15px;border-radius:10px;font-weight:700;}
-.success{background:rgba(0,255,0,.2);border:1px solid #0f0;color:#0f0;}
-.error{background:rgba(255,0,0,.2);border:1px solid #f00;color:#f00;}
-@media(max-width:500px){.card{padding:30px 20px;}}
+body{font-family:'Orbitron',sans-serif;background:#000;color:#0ff;min-height:100vh;display:grid;place-items:center;padding:2rem;}
+canvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;}
+.card{background:rgba(0,0,0,.9);border:1px solid #0ff;border-radius:1rem;padding:2rem;max-width:28rem;width:100%;box-shadow:0 0 2rem #0ff2;text-align:center;position:relative;z-index:2;}
+h1{font-size:2rem;background:linear-gradient(45deg,#0ff,#f0f);-webkit-background-clip:text;background-clip:text;}
+input,button{width:100%;padding:1rem;font-size:1rem;margin:.5rem 0;border:1px solid #0ff;border-radius:.75rem;background:rgba(0,0,0,.5);color:#0ff;font-family:inherit;}
+button{background:linear-gradient(45deg,#0ff,#f0f);color:#000;font-weight:700;cursor:pointer;}
+#code{font-size:2.5rem;font-weight:900;margin:1rem 0;background:linear-gradient(45deg,#0ff,#f0f);-webkit-background-clip:text;background-clip:text;}
+#res{display:none;margin-top:1.5rem;padding:1.5rem;background:rgba(0,255,255,.1);border-radius:1rem;border:1px solid #0ff;}
+.stat{padding:.75rem;border-radius:.5rem;margin-top:1rem;font-weight:700;}
+.success{background:rgba(0,255,0,.2);color:#0f0;border:1px solid #0f0;}
+.error{background:rgba(255,0,0,.2);color:#f00;border:1px solid #f00;}
 </style>
-</head>
-<body>
-<canvas id="c"></canvas>
+</head><body>
+<canvas id="m"></canvas>
 <div class="card">
 <h1>${config.botName}</h1>
-<p style="color:#ccc;margin-bottom:30px;">Enter number → Get code → Check WhatsApp</p>
-<input id="num" placeholder="254712345678">
-<button onclick="getCode()">⚡ GENERATE CODE</button>
+<input id="n" placeholder="254712345678">
+<button onclick="p()">⚡ GET CODE</button>
 <div id="res">
-<div id="code"></div>
-<div class="instr">
-<strong>📱 WhatsApp Notification:</strong><br>
-Settings → Linked Devices → <strong>Link with phone number</strong><br>
-<strong>Enter 8-digit code above</strong>
+<div id="c"></div>
+<div style="margin-top:1rem;font-size:.9rem;color:#ccc;">📱 WhatsApp → Linked Devices → Link with phone number → Enter code</div>
 </div>
-</div>
-<div id="stat"></div>
+<div id="s"></div>
 </div>
 <script>
-const c = document.getElementById('c'), ctx = c.getContext('2d');
-let cw = c.width = innerWidth, ch = c.height = innerHeight;
-const cols = Math.floor(cw/25), drops = Array(cols).fill(0);
-addEventListener('resize', () => {cw = c.width = innerWidth; ch = c.height = innerHeight;});
-setInterval(() => {
-  ctx.fillStyle = 'rgba(0,0,0,.04)'; ctx.fillRect(0,0,cw,ch);
-  ctx.fillStyle = '#0ff'; ctx.font = '18px monospace';
-  for(let i=0;i<cols;i++) {
-    const txt = String.fromCharCode(0x30A0+Math.random()*96);
-    ctx.fillText(txt, i*25, drops[i]*25);
-    drops[i] = drops[i]*25>ch && Math.random()>.99 ? 0 : drops[i]++;
-  }
-}, 50);
-
-async function getCode() {
-  const num = document.getElementById('num').value.replace(/[^0-9]/g,'');
-  if(num.length<10) return stat('Enter valid number (eg: 254712345678)', 'error');
-  const btn = document.querySelector('button');
-  btn.disabled = true; btn.textContent = '⏳ Getting code...';
-  try {
-    const r = await fetch('/api/pair', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({phoneNumber:num})});
-    const d = await r.json();
-    if(d.success) {
-      document.getElementById('code').textContent = d.code;
-      document.getElementById('res').style.display = 'block';
-      stat('✅ Code ready! Check WhatsApp notification', 'success');
-      btn.textContent = '🔄 NEW CODE';
-    } else stat(d.error, 'error');
-  } catch(e) { stat('Network error', 'error'); }
-  btn.disabled = false;
-}
-
-function stat(msg, t) {
-  document.getElementById('stat').innerHTML = '<div class="status '+t+'">'+msg+'</div>';
-}
-
-document.getElementById('num').addEventListener('keypress', e=>e.key==='Enter'&&getCode());
-</script>
-</body>
-</html>`);
+c=document.getElementById('m'),x=c.getContext('2d'),w=c.width=innerWidth,h=c.height=innerHeight,cols=Math.floor(w/20),y=Array(cols).fill(0);addEventListener('resize',()=>{w=c.width=innerWidth;h=c.height=innerHeight;});setInterval(()=>{x.fillStyle='rgba(0,0,0,.05)';x.fillRect(0,0,w,h);x.fillStyle='#0ff';x.font='16px monospace';for(let i=0;i<cols;i++){x.fillText(String.fromCharCode(0x30A0+Math.random()*96),i*w/cols,y[i]*20);y[i]=y[i]>h?0:y[i]+1;}},35);
+async function p(){const n=document.getElementById('n').value.replace(/[^0-9]/g,'');if(n.length<10){s('Valid number please','error');return;}const b=document.querySelector('button');b.disabled=true;b.textContent='⏳';try{const r=await fetch('/api/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:n})});const d=await r.json();if(d.success){document.getElementById('c').textContent=d.code;document.getElementById('res').style.display='block';s('✅ Check WhatsApp!','success');b.textContent='NEW CODE';}else s(d.error,'error');}catch(e){s('Error','error');}b.disabled=false;}function s(m,t){document.getElementById('s').innerHTML='<div class="stat '+t+'">'+m+'</div>';}document.getElementById('n').addEventListener('keypress',e=>e.key=='Enter'&&p());
+</script></body></html>`);
 });
 
-// GET /api/status → Bot status
-app.get('/api/status', (req, res) => {
-  const sock = getSock();
-  res.json({
-    botName: config.botName,
-    status: sock ? (sock.user ? 'ready' : 'connecting') : 'starting',
-    prefix: config.prefix,
-    uptime: Math.floor(process.uptime()),
-    port: config.port
-  });
-});
+app.get('/api/status', (req, res) => res.json({ status: sock?.user ? 'online' : 'connecting' }));
 
-// ──────────────────────────────────────────────────
-//  Start server
-// ──────────────────────────────────────────────────
 export function startServer() {
-  const PORT = config.port;
-  app.listen(PORT, '0.0.0.0', () => {
-    log.ok(`[ALMEER MD] Server → http://0.0.0.0:${PORT}`);
-    log.ok(`[USAGE] Visit URL → Enter number → WhatsApp notifies code instantly`);
+  app.listen(config.port, '0.0.0.0', () => {
+    log.ok(`Server: ${config.port}`);
   });
-}
+  }
